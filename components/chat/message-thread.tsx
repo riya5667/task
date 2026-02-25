@@ -1,9 +1,9 @@
 "use client";
 
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import type { Id } from "../../convex/_generated/dataModel";
 import { useMutation, useQuery } from "convex/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../../convex/_generated/api";
 import { useAutoScroll } from "../../hooks/use-auto-scroll";
@@ -13,6 +13,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { EmptyState } from "../ui/empty-state";
 import { ErrorState } from "../ui/error-state";
+import { Input } from "../ui/input";
 import { Skeleton } from "../ui/skeleton";
 import { Textarea } from "../ui/textarea";
 
@@ -28,6 +29,31 @@ type ReactionEntry = {
   emoji: (typeof REACTION_EMOJIS)[number];
   userIds: Id<"users">[];
 };
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function highlightMessageContent(content: string, query: string): ReactNode {
+  if (!query.trim()) {
+    return content;
+  }
+
+  const regex = new RegExp(`(${escapeRegExp(query)})`, "gi");
+  const parts = content.split(regex);
+
+  return parts.map((part, index) => {
+    if (part.toLowerCase() === query.toLowerCase()) {
+      return (
+        <mark key={`${part}-${index}`} className="rounded bg-amber-200/80 px-0.5 text-foreground">
+          {part}
+        </mark>
+      );
+    }
+
+    return <span key={`${part}-${index}`}>{part}</span>;
+  });
+}
 
 function EmptyMessagesIcon() {
   return (
@@ -63,6 +89,59 @@ function NewMessagesIcon() {
   );
 }
 
+function SearchIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <path d="m18 6-12 12" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function EmojiPickerIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      className="h-3.5 w-3.5"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8 15s1.2 2 4 2 4-2 4-2" />
+      <path d="M9 10h.01" />
+      <path d="M15 10h.01" />
+    </svg>
+  );
+}
+
 export function MessageThread({
   conversationId,
   currentUserId,
@@ -74,6 +153,11 @@ export function MessageThread({
   const [sendError, setSendError] = useState<string | null>(null);
   const [lastFailedContent, setLastFailedContent] = useState<string | null>(null);
   const [messageActionError, setMessageActionError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(0);
+  const [openReactionPickerMessageId, setOpenReactionPickerMessageId] = useState<Id<"messages"> | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const messages = useQuery(api.messages.listByConversation, { conversationId, currentClerkId });
   const typingUsers = useQuery(api.presence.listTypingUsers, { conversationId, currentClerkId });
@@ -93,6 +177,66 @@ export function MessageThread({
   const orderedMessages = useMemo(() => {
     return [...(messages ?? [])].sort((a, b) => a.createdAt - b.createdAt);
   }, [messages]);
+
+  const searchResultMessageIndexes = useMemo(() => {
+    const normalizedSearch = searchQuery.trim().toLowerCase();
+
+    if (!normalizedSearch) {
+      return [] as number[];
+    }
+
+    return orderedMessages.reduce<number[]>((indexes, message, index) => {
+      if (!message.deleted && message.content.toLowerCase().includes(normalizedSearch)) {
+        indexes.push(index);
+      }
+
+      return indexes;
+    }, []);
+  }, [orderedMessages, searchQuery]);
+
+  useEffect(() => {
+    if (searchResultMessageIndexes.length === 0) {
+      setActiveSearchResultIndex(0);
+      return;
+    }
+
+    if (activeSearchResultIndex >= searchResultMessageIndexes.length) {
+      setActiveSearchResultIndex(0);
+    }
+  }, [activeSearchResultIndex, searchResultMessageIndexes.length]);
+
+  const activeResultMessageIndex =
+    searchResultMessageIndexes.length > 0
+      ? searchResultMessageIndexes[activeSearchResultIndex] ?? null
+      : null;
+
+  useEffect(() => {
+    if (activeResultMessageIndex === null) {
+      return;
+    }
+
+    const targetElement = document.getElementById(`message-row-${activeResultMessageIndex}`);
+    targetElement?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [activeResultMessageIndex]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isFindShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f";
+      if (!isFindShortcut) {
+        return;
+      }
+
+      event.preventDefault();
+      setIsSearchOpen(true);
+      window.setTimeout(() => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }, 0);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const {
     onScroll,
@@ -176,6 +320,26 @@ export function MessageThread({
     setMessageActionError(errorMessage);
   };
 
+  const jumpToNextSearchResult = () => {
+    if (searchResultMessageIndexes.length === 0) {
+      return;
+    }
+
+    setActiveSearchResultIndex((currentIndex) =>
+      currentIndex + 1 >= searchResultMessageIndexes.length ? 0 : currentIndex + 1,
+    );
+  };
+
+  const jumpToPreviousSearchResult = () => {
+    if (searchResultMessageIndexes.length === 0) {
+      return;
+    }
+
+    setActiveSearchResultIndex((currentIndex) =>
+      currentIndex - 1 < 0 ? searchResultMessageIndexes.length - 1 : currentIndex - 1,
+    );
+  };
+
   if (messages === undefined) {
     return (
       <div className="space-y-3 p-4">
@@ -207,6 +371,68 @@ export function MessageThread({
         </div>
       ) : null}
 
+      <div className="border-b border-border/70 px-4 py-2">
+        <div className="flex items-center justify-end gap-2">
+          {isSearchOpen ? (
+            <>
+              <Input
+                ref={searchInputRef}
+                value={searchQuery}
+                onChange={(event) => {
+                  setSearchQuery(event.target.value);
+                  setActiveSearchResultIndex(0);
+                }}
+                placeholder="Search messages..."
+                className="h-7 w-44 text-xs md:w-56"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={jumpToPreviousSearchResult}
+                disabled={searchResultMessageIndexes.length === 0}
+                className="h-7 px-2 text-xs"
+              >
+                Prev
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={jumpToNextSearchResult}
+                disabled={searchResultMessageIndexes.length === 0}
+                className="h-7 px-2 text-xs"
+              >
+                Next
+              </Button>
+              <span className="min-w-12 text-right text-xs text-muted-foreground">
+                {searchQuery.trim()
+                  ? `${searchResultMessageIndexes.length === 0 ? 0 : activeSearchResultIndex + 1}/${searchResultMessageIndexes.length}`
+                  : "\u00A0"}
+              </span>
+            </>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-label={isSearchOpen ? "Close search" : "Open search"}
+            onClick={() => {
+              const nextOpenState = !isSearchOpen;
+              setIsSearchOpen(nextOpenState);
+              if (nextOpenState) {
+                window.setTimeout(() => {
+                  searchInputRef.current?.focus();
+                }, 0);
+              }
+            }}
+            className="h-7 w-7"
+          >
+            {isSearchOpen ? <CloseIcon /> : <SearchIcon />}
+          </Button>
+        </div>
+      </div>
+
       <div
         ref={scrollContainerRef}
         onScroll={onScroll}
@@ -224,27 +450,30 @@ export function MessageThread({
               icon={<EmptyMessagesIcon />}
             />
           ) : (
-            orderedMessages.map((message) => {
-            const isOwn = message.senderId === currentUserId;
-            const canDelete = isOwn && !message.deleted;
-            const reactionEntries = (message as { reactionEntries?: ReactionEntry[] }).reactionEntries ?? [];
-            const reactionMap = new Map(
-              reactionEntries.map((entry) => [entry.emoji, entry.userIds] as const),
-            );
+            orderedMessages.map((message, messageIndex) => {
+              const isOwn = message.senderId === currentUserId;
+              const canDelete = isOwn && !message.deleted;
+              const reactionEntries = (message as { reactionEntries?: ReactionEntry[] }).reactionEntries ?? [];
+              const reactionMap = new Map(
+                reactionEntries.map((entry) => [entry.emoji, entry.userIds] as const),
+              );
 
-            const reactionSummary = REACTION_EMOJIS.map((emoji) => {
-              const userIds = reactionMap.get(emoji) ?? [];
+              const reactionSummary = REACTION_EMOJIS.map((emoji) => {
+                const userIds = reactionMap.get(emoji) ?? [];
 
-              return {
-                emoji,
-                count: userIds.length,
-                reactedByCurrentUser: userIds.some((userId) => userId === currentUserId),
-              };
-            }).filter((entry) => entry.count > 0);
+                return {
+                  emoji,
+                  count: userIds.length,
+                  reactedByCurrentUser: userIds.some((userId) => userId === currentUserId),
+                };
+              }).filter((entry) => entry.count > 0);
+
+              const isActiveSearchResult = messageIndex === activeResultMessageIndex;
 
               return (
                 <div
                   key={message._id}
+                  id={`message-row-${messageIndex}`}
                   className={cn("flex", isOwn ? "justify-end" : "justify-start")}
                 >
                 <div className="max-w-[78%]">
@@ -254,6 +483,7 @@ export function MessageThread({
                       isOwn
                         ? "rounded-br-md bg-foreground text-background hover:shadow-md"
                         : "rounded-bl-md border border-border bg-background text-foreground hover:shadow-md",
+                      isActiveSearchResult && "ring-2 ring-amber-400 ring-offset-1",
                     )}
                   >
                     {!isOwn ? (
@@ -268,7 +498,9 @@ export function MessageThread({
                         message.deleted ? "italic" : "not-italic",
                       )}
                     >
-                      {message.deleted ? "This message was deleted" : message.content}
+                      {message.deleted
+                        ? "This message was deleted"
+                        : highlightMessageContent(message.content, searchQuery)}
                     </p>
 
                     <div className="mt-1 flex items-center justify-between gap-2">
@@ -330,26 +562,54 @@ export function MessageThread({
                         </Button>
                       ))}
 
-                      {REACTION_EMOJIS.map((emoji) => (
+                      <div className="relative">
                         <Button
-                          key={`${message._id}-toggle-${emoji}`}
+                          key={`${message._id}-toggle-picker`}
                           variant="outline"
                           size="icon"
                           onClick={() =>
-                            void toggleReaction({
-                              messageId: message._id,
-                              emoji,
-                              currentClerkId,
-                            }).catch((error) =>
-                              handleMessageActionFailure(error, "Unable to update reaction."),
+                            setOpenReactionPickerMessageId((currentId) =>
+                              currentId === message._id ? null : message._id,
                             )
                           }
-                          className="h-6 w-6 rounded-full text-xs"
-                          aria-label={`React with ${emoji}`}
+                          className="h-6 w-6 rounded-full"
+                          aria-label="Open emoji picker"
                         >
-                          {emoji}
+                          <EmojiPickerIcon />
                         </Button>
-                      ))}
+
+                        {openReactionPickerMessageId === message._id ? (
+                          <div
+                            className={cn(
+                              "absolute z-20 mt-1 flex items-center gap-1 rounded-full border border-border bg-card px-1.5 py-1 shadow-lg",
+                              isOwn ? "right-0" : "left-0",
+                            )}
+                          >
+                            {REACTION_EMOJIS.map((emoji) => (
+                              <Button
+                                key={`${message._id}-choose-${emoji}`}
+                                variant="ghost"
+                                size="icon"
+                                onClick={() =>
+                                  void toggleReaction({
+                                    messageId: message._id,
+                                    emoji,
+                                    currentClerkId,
+                                  })
+                                    .then(() => setOpenReactionPickerMessageId(null))
+                                    .catch((error) =>
+                                      handleMessageActionFailure(error, "Unable to update reaction."),
+                                    )
+                                }
+                                className="h-7 w-7 rounded-full text-sm hover:scale-110"
+                                aria-label={`React with ${emoji}`}
+                              >
+                                {emoji}
+                              </Button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   ) : null}
                 </div>
